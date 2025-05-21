@@ -1,0 +1,7 @@
+streamlit==1.32.2
+deepface==0.0.79
+opencv-python==4.9.0.80
+pillow==10.2.0
+numpy==1.26.4
+tensorflow==2.15.0
+protobuf==3.20.3

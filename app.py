@@ -71,14 +71,20 @@ def get_image_with_bounding_boxes(pil_image, detector_backend):
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp_file:
             pil_image.convert('RGB').save(tmp_file.name, format='JPEG'); temp_file_path = tmp_file.name
+        
+        # PERBAIKAN: Menghapus argumen 'silent=True' dari DeepFace.extract_faces()
         extracted_faces_info = DeepFace.extract_faces(
-            img_path=temp_file_path, detector_backend=detector_backend, enforce_detection=False, align=False, silent=True
+            img_path=temp_file_path, 
+            detector_backend=detector_backend, 
+            enforce_detection=False, 
+            align=False 
+            # silent=True DIHAPUS DARI SINI
         )
+
         for face_info in extracted_faces_info:
             if isinstance(face_info, dict) and 'facial_area' in face_info and face_info.get('confidence', 0) > 0.1:
                 fx, fy, fw, fh = face_info['facial_area']['x'], face_info['facial_area']['y'], \
                                  face_info['facial_area']['w'], face_info['facial_area']['h']
-                # Gambar kotak HIJAU (0, 255, 0) di BGR
                 cv2.rectangle(img_cv, (fx, fy), (fx + fw, fy + fh), (0, 255, 0), 2) 
                 faces_detected_count += 1
         img_cv_rgb = cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB)
@@ -98,12 +104,13 @@ def analyze_face_attributes_func(pil_image, detector_backend):
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp_file:
             pil_image.convert('RGB').save(tmp_file.name, format='JPEG'); temp_file_path = tmp_file.name
+        # Parameter 'silent=True' valid untuk DeepFace.analyze()
         analysis_result = DeepFace.analyze(
             img_path=temp_file_path, actions=['age', 'gender', 'emotion', 'race'],
             enforce_detection=True, detector_backend=detector_backend, silent=True
         )
         if isinstance(analysis_result, list) and len(analysis_result) > 0: return analysis_result[0]
-        elif isinstance(analysis_result, dict): return analysis_result # Kompatibilitas dengan DeepFace lama
+        elif isinstance(analysis_result, dict): return analysis_result
         return {"error": "Tidak ada wajah terdeteksi atau analisis gagal."}
     except Exception as e:
         st.warning(f"Analisis atribut dengan '{detector_backend}' gagal: {e}")
@@ -237,14 +244,14 @@ if selected_model_name:
         current_user_threshold = st.session_state.custom_thresholds.get(selected_model_name, default_model_threshold)
         step_val, min_val = 0.01, 0.0
         if MODELS[selected_model_name]["distance_metric"] == "cosine": max_val = 1.0
-        elif MODELS[selected_model_name]["distance_metric"] == "euclidean": max_val = 50.0 # Contoh rentang
-        elif MODELS[selected_model_name]["distance_metric"] == "euclidean_l2": max_val = 2.0 # Contoh rentang
+        elif MODELS[selected_model_name]["distance_metric"] == "euclidean": max_val = 50.0
+        elif MODELS[selected_model_name]["distance_metric"] == "euclidean_l2": max_val = 2.0
         else: max_val = default_model_threshold * 3 if default_model_threshold > 0.1 else 1.0
         safe_slider_value = max(min_val, min(current_user_threshold, max_val))
         new_threshold = st.slider(
             f"Threshold untuk {selected_model_name} (Metrik: {MODELS[selected_model_name]['distance_metric']})",
             min_value=min_val, max_value=max_val, value=safe_slider_value, step=step_val,
-            key=f"thresh_single_{selected_model_name}", # Kunci unik
+            key=f"thresh_single_{selected_model_name}",
             help=f"Lebih rendah berarti lebih ketat. Default: {default_model_threshold:.3f}. Jika jarak < threshold, maka cocok."
         )
         st.session_state.custom_thresholds[selected_model_name] = new_threshold
@@ -252,8 +259,8 @@ st.markdown("---")
 
 # --- Logika Perbandingan (HANYA SATU MODEL) dan Tampilan Hasil ---
 def compare_face_single_model(img1_path, img2_path, model_name_to_use, config_for_model, detector_backend):
-    """Membandingkan dua wajah menggunakan SATU model dengan konfigurasi threshold yang diberikan."""
     try:
+        # Parameter 'silent=True' valid untuk DeepFace.verify()
         result = DeepFace.verify(
             img1_path=img1_path, img2_path=img2_path, model_name=model_name_to_use,
             distance_metric=config_for_model["distance_metric"],
@@ -330,6 +337,5 @@ with st.expander("Tentang Aplikasi Ini & Model yang Digunakan", expanded=False):
     st.markdown(f"\n**Backend Detektor Wajah yang Digunakan:** `{st.session_state.selected_detector_backend}`")
 
 with st.sidebar:
-    # st.image("URL_IKON_ANDA_DISINI", width=80) # Ganti dengan URL ikon yang sesuai jika ada
     st.markdown("### Instruksi Penggunaan"); st.markdown("""1. **Pilih Detektor Wajah** (di sidebar kiri).\n2. **Unggah Gambar** 1 & 2.\n3. **(Opsional) Analisis Atribut**.\n4. **Pilih Model Perbandingan**.\n5. **(Opsional) Sesuaikan Threshold**.\n6. **Bandingkan Wajah**.\n7. **Lihat Hasil**.""")
     st.markdown("### Tips"); st.markdown("- Gunakan gambar wajah jelas & frontal.\n- Pencahayaan baik membantu.\n- Resolusi lebih tinggi lebih baik.")

@@ -6,417 +6,330 @@ import numpy as np
 from PIL import Image
 import tempfile
 
-# Configure the app
+# Konfigurasi halaman aplikasi Streamlit
 st.set_page_config(
-    page_title="Face Similarity Comparison",
-    page_icon="👥",
+    page_title="Analisis & Perbandingan Wajah Tingkat Lanjut",
+    page_icon="🔬",
     layout="wide"
 )
 
+# Daftar MODEL yang akan digunakan beserta konfigurasi threshold dan metrik jaraknya
 MODELS = {
-    "VGG-Face": {"threshold": 0.40, "distance_metric": "cosine"},
-    "Facenet": {"threshold": 0.40, "distance_metric": "euclidean"}, # DeepFace default for Facenet is 0.40
-    "Facenet512": {"threshold": 1.0, "distance_metric": "euclidean_l2"}, # Updated from Facenet to Facenet512 to match newer DeepFace model names
-    "ArcFace": {"threshold": 0.68, "distance_metric": "cosine"}, # DeepFace default for ArcFace is 0.68
-    "Dlib": {"threshold": 0.07, "distance_metric": "euclidean_l2"}, # Dlib often uses euclidean_l2, threshold needs tuning, DeepFace suggests 0.07 for its Dlib ResNet model
-    "OpenFace": {"threshold": 0.80, "distance_metric": "cosine"}, # This seems low, DeepFace's default for OpenFace is often higher (e.g. 0.40 with euclidean_l2) or needs checking
-    "DeepFace": {"threshold": 0.59, "distance_metric": "cosine"} # DeepFace model (wrapper) default is 0.23
+    "VGG-Face": {"threshold": 0.68, "distance_metric": "cosine"},
+    "Facenet": {"threshold": 0.40, "distance_metric": "euclidean"},
+    "Facenet512": {"threshold": 1.00, "distance_metric": "euclidean_l2"},
+    "ArcFace": {"threshold": 0.68, "distance_metric": "cosine"},
+    "Dlib": {"threshold": 0.07, "distance_metric": "euclidean_l2"},
+    "SFace": {"threshold": 0.594, "distance_metric": "cosine"},
+    "OpenFace": {"threshold": 0.80, "distance_metric": "euclidean_l2"},
 }
-# Note: Thresholds for DeepFace models can vary slightly based on their training and the specific version.
-# It's good practice to check DeepFace documentation or experiment for optimal thresholds.
-# For "Dlib", DeepFace often refers to a ResNet-based model trained with Dlib.
-# If you intend to use Dlib's HOG + landmark based older recognition, that's a different setup.
-# Assuming DeepFace's "Dlib" model name refers to its built-in Dlib-based recognizer.
 
-# Custom CSS for better styling
+# Daftar DETECTOR_BACKEND yang bisa dipilih pengguna (Dibatasi)
+SUPPORTED_DETECTORS = ["opencv", "dlib", "mediapipe"]
+
+# CSS Kustom
 st.markdown("""
 <style>
-    .stApp {
-        max-width: 1200px;
-        margin: 0 auto;
-    }
-    .image-container {
-        display: flex;
-        justify-content: space-between;
-        margin-bottom: 2rem;
-    }
-    .image-box {
-        width: 48%;
-        border: 2px dashed #ccc;
-        border-radius: 10px;
-        padding: 1rem;
-        text-align: center;
-    }
-    .result-box {
-        background-color: #f8f9fa;
-        border-radius: 10px;
-        padding: 1.5rem;
-        margin-top: 1rem;
-    }
-    .progress-container {
-        height: 20px;
-        background-color: #e9ecef;
-        border-radius: 10px;
-        margin: 1rem 0;
-    }
-    .progress-bar {
-        height: 100%;
-        border-radius: 10px;
-        background-color: #4CAF50;
-        width: 0%;
-        transition: width 0.5s ease;
-    }
-    .face-highlight {
-        position: absolute;
-        border: 3px solid #FF5722;
-        border-radius: 5px;
-        display: none;
-    }
-    .metric-box {
-        background-color: white;
-        border-radius: 10px;
-        padding: 1rem;
-        margin: 0.5rem 0;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    }
+    .stApp { max-width: 1300px; margin: 0 auto; }
+    .progress-container { height: 20px; background-color: #e9ecef; border-radius: 10px; margin: 1rem 0; }
+    .progress-bar { height: 100%; border-radius: 10px; background-color: #4CAF50; width: 0%; transition: width 0.5s ease; }
 </style>
 """, unsafe_allow_html=True)
 
-# App title and description
-st.title("👥 Face Similarity Comparison")
+# Judul utama aplikasi
+st.title("🔬 Analisis & Perbandingan Wajah Tingkat Lanjut")
 st.markdown("""
-Compare two face images using selected face recognition models.
-Upload clear frontal face images for best results.
+Unggah dua gambar wajah untuk membandingkan kemiripannya menggunakan model dan detektor wajah pilihan.
+Anda juga dapat menganalisis atribut wajah individual dan menyesuaikan ambang batas (threshold) model.
 """)
 
-# Initialize session state for images
-if 'image1' not in st.session_state:
-    st.session_state.image1 = None
-if 'image2' not in st.session_state:
-    st.session_state.image2 = None
+# --- Inisialisasi Session State ---
+default_session_states = {
+    'image1_original': None, 'image1_display': None, 'image1_analysis': None, 'image1_face_count': 0, 'img1_current_filename': None,
+    'image2_original': None, 'image2_display': None, 'image2_analysis': None, 'image2_face_count': 0, 'img2_current_filename': None,
+    'custom_thresholds': {},
+    'selected_detector_backend': SUPPORTED_DETECTORS[0]
+}
+for key, value in default_session_states.items():
+    if key not in st.session_state:
+        st.session_state[key] = value
 
-# Image upload columns
-col1_img, col2_img = st.columns(2)
-
-
+# --- Fungsi-Fungsi Pembantu ---
 def load_image(image_file):
-    """Load and validate an image file."""
+    """Memuat file gambar menjadi objek PIL.Image."""
     if image_file is not None:
-        try:
-            img = Image.open(image_file)
-            return img
-        except Exception as e:
-            st.error(f"Error loading image: {str(e)}")
-            return None
+        try: img = Image.open(image_file); return img
+        except Exception as e: st.error(f"Gagal memuat gambar: {str(e)}"); return None
     return None
 
-# Image upload and display
+def get_image_with_bounding_boxes(pil_image, detector_backend):
+    """Mendeteksi wajah dalam gambar PIL dan mengembalikan gambar dengan kotak pembatas (bounding box) 
+       berwarna hijau serta jumlah wajah yang terdeteksi."""
+    if pil_image is None: return None, 0
+    img_cv = np.array(pil_image.convert('RGB')); img_cv = cv2.cvtColor(img_cv, cv2.COLOR_RGB2BGR)
+    faces_detected_count = 0; temp_file_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp_file:
+            pil_image.convert('RGB').save(tmp_file.name, format='JPEG'); temp_file_path = tmp_file.name
+        extracted_faces_info = DeepFace.extract_faces(
+            img_path=temp_file_path, detector_backend=detector_backend, enforce_detection=False, align=False, silent=True
+        )
+        for face_info in extracted_faces_info:
+            if isinstance(face_info, dict) and 'facial_area' in face_info and face_info.get('confidence', 0) > 0.1:
+                fx, fy, fw, fh = face_info['facial_area']['x'], face_info['facial_area']['y'], \
+                                 face_info['facial_area']['w'], face_info['facial_area']['h']
+                # Gambar kotak HIJAU (0, 255, 0) di BGR
+                cv2.rectangle(img_cv, (fx, fy), (fx + fw, fy + fh), (0, 255, 0), 2) 
+                faces_detected_count += 1
+        img_cv_rgb = cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB)
+        return Image.fromarray(img_cv_rgb), faces_detected_count
+    except Exception as e:
+        st.warning(f"Deteksi wajah dengan '{detector_backend}' gagal: {e}. Menampilkan gambar asli.")
+        print(f"Error di get_image_with_bounding_boxes (backend: {detector_backend}): {e}")
+        img_cv_rgb = cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB)
+        return Image.fromarray(img_cv_rgb), 0
+    finally:
+        if temp_file_path and os.path.exists(temp_file_path): os.unlink(temp_file_path)
+
+def analyze_face_attributes_func(pil_image, detector_backend):
+    """Menganalisis atribut wajah (usia, gender, emosi, ras) dari gambar PIL."""
+    if pil_image is None: return None
+    temp_file_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp_file:
+            pil_image.convert('RGB').save(tmp_file.name, format='JPEG'); temp_file_path = tmp_file.name
+        analysis_result = DeepFace.analyze(
+            img_path=temp_file_path, actions=['age', 'gender', 'emotion', 'race'],
+            enforce_detection=True, detector_backend=detector_backend, silent=True
+        )
+        if isinstance(analysis_result, list) and len(analysis_result) > 0: return analysis_result[0]
+        elif isinstance(analysis_result, dict): return analysis_result # Kompatibilitas dengan DeepFace lama
+        return {"error": "Tidak ada wajah terdeteksi atau analisis gagal."}
+    except Exception as e:
+        st.warning(f"Analisis atribut dengan '{detector_backend}' gagal: {e}")
+        print(f"Error di analyze_face_attributes_func (backend: {detector_backend}): {e}")
+        return {"error": str(e)}
+    finally:
+        if temp_file_path and os.path.exists(temp_file_path): os.unlink(temp_file_path)
+
+# --- UI Pilihan Global: Detector Backend ---
+st.sidebar.subheader("⚙️ Pengaturan Detektor Wajah")
+current_detector = st.session_state.get('selected_detector_backend', SUPPORTED_DETECTORS[0])
+if current_detector not in SUPPORTED_DETECTORS:
+    current_detector = SUPPORTED_DETECTORS[0]
+    st.session_state.selected_detector_backend = current_detector
+
+selected_detector = st.sidebar.selectbox(
+    "Pilih Backend Detektor Wajah:",
+    options=SUPPORTED_DETECTORS,
+    index=SUPPORTED_DETECTORS.index(current_detector),
+    key="detector_selector",
+    help="Backend yang berbeda memiliki kecepatan dan akurasi yang berbeda. Pastikan dependensi terinstal."
+)
+if selected_detector != st.session_state.selected_detector_backend:
+    st.session_state.selected_detector_backend = selected_detector
+    st.session_state.image1_display = None
+    st.session_state.image2_display = None
+    st.rerun()
+
+
+# --- UI untuk Unggah Gambar dan Analisis Atribut ---
+col1_img, col2_img = st.columns(2)
+
+# --- Penanganan Gambar 1 ---
 with col1_img:
-    st.subheader("First Image")
-    image_file1 = st.file_uploader("Upload first face image", type=[
-                                   "jpg", "jpeg", "png"], key="img1")
-    if image_file1 is not None:
-        st.session_state.image1 = load_image(image_file1)
-        if st.session_state.image1:
-            st.image(st.session_state.image1,
-                     caption="Image 1", use_column_width=True)
+    st.subheader("Gambar Pertama")
+    uploaded_file_obj1 = st.file_uploader("Unggah gambar wajah pertama", type=["jpg", "jpeg", "png"], key="img1_uploader")
+    if uploaded_file_obj1 is None:
+        if st.session_state.img1_current_filename is not None:
+            st.session_state.image1_original = None; st.session_state.image1_display = None
+            st.session_state.image1_analysis = None; st.session_state.image1_face_count = 0
+            st.session_state.img1_current_filename = None
+    else:
+        if st.session_state.img1_current_filename != uploaded_file_obj1.name or st.session_state.image1_original is None:
+            st.session_state.image1_original = load_image(uploaded_file_obj1)
+            st.session_state.img1_current_filename = uploaded_file_obj1.name
+            st.session_state.image1_display = None; st.session_state.image1_analysis = None
+            st.session_state.image1_face_count = 0
+        if st.session_state.image1_original:
+            if st.session_state.image1_display is None:
+                with st.spinner(f"Mendeteksi wajah di Gambar 1 (detektor: {st.session_state.selected_detector_backend})..."):
+                    st.session_state.image1_display, st.session_state.image1_face_count = \
+                        get_image_with_bounding_boxes(st.session_state.image1_original, st.session_state.selected_detector_backend)
+            if st.session_state.image1_display:
+                st.image(st.session_state.image1_display, caption=f"Gambar 1 ({st.session_state.image1_face_count} wajah terdeteksi)", use_container_width=True)
+            if st.button("Analisis Atribut - Gambar 1", key="analyze1_btn", use_container_width=True):
+                if st.session_state.image1_original:
+                    with st.spinner(f"Menganalisis atribut Gambar 1 (detektor: {st.session_state.selected_detector_backend})..."):
+                        st.session_state.image1_analysis = analyze_face_attributes_func(st.session_state.image1_original, st.session_state.selected_detector_backend)
+                else: st.warning("Harap unggah Gambar 1 untuk menganalisis atribut.")
+    if st.session_state.image1_analysis:
+        with st.container(border=True):
+            if "error" in st.session_state.image1_analysis: st.error(f"Error Analisis Gbr 1: {st.session_state.image1_analysis['error']}")
+            else:
+                st.markdown("**Atribut Gambar 1:**"); res = st.session_state.image1_analysis
+                attr_colA, attr_colB = st.columns(2)
+                with attr_colA:
+                    st.metric("Perk. Usia", f"{res.get('age', 'N/A')}")
+                    dom_gender = max(res.get('gender', {}), key=res.get('gender', {}).get, default='N/A')
+                    st.metric("Gender", dom_gender)
+                with attr_colB:
+                    st.metric("Emosi", f"{res.get('dominant_emotion', 'N/A').capitalize()}")
+                    st.metric("Ras", f"{res.get('dominant_race', 'N/A').capitalize()}")
 
+# --- Penanganan Gambar 2 ---
 with col2_img:
-    st.subheader("Second Image")
-    image_file2 = st.file_uploader("Upload second face image", type=[
-                                   "jpg", "jpeg", "png"], key="img2")
-    if image_file2 is not None:
-        st.session_state.image2 = load_image(image_file2)
-        if st.session_state.image2:
-            st.image(st.session_state.image2,
-                     caption="Image 2", use_column_width=True)
+    st.subheader("Gambar Kedua")
+    uploaded_file_obj2 = st.file_uploader("Unggah gambar wajah kedua", type=["jpg", "jpeg", "png"], key="img2_uploader")
+    if uploaded_file_obj2 is None:
+        if st.session_state.img2_current_filename is not None:
+            st.session_state.image2_original = None; st.session_state.image2_display = None
+            st.session_state.image2_analysis = None; st.session_state.image2_face_count = 0
+            st.session_state.img2_current_filename = None
+    else:
+        if st.session_state.img2_current_filename != uploaded_file_obj2.name or st.session_state.image2_original is None:
+            st.session_state.image2_original = load_image(uploaded_file_obj2)
+            st.session_state.img2_current_filename = uploaded_file_obj2.name
+            st.session_state.image2_display = None; st.session_state.image2_analysis = None
+            st.session_state.image2_face_count = 0
+        if st.session_state.image2_original:
+            if st.session_state.image2_display is None:
+                with st.spinner(f"Mendeteksi wajah di Gambar 2 (detektor: {st.session_state.selected_detector_backend})..."):
+                    st.session_state.image2_display, st.session_state.image2_face_count = \
+                        get_image_with_bounding_boxes(st.session_state.image2_original, st.session_state.selected_detector_backend)
+            if st.session_state.image2_display:
+                st.image(st.session_state.image2_display, caption=f"Gambar 2 ({st.session_state.image2_face_count} wajah terdeteksi)", use_container_width=True)
+            if st.button("Analisis Atribut - Gambar 2", key="analyze2_btn", use_container_width=True):
+                if st.session_state.image2_original:
+                    with st.spinner(f"Menganalisis atribut Gambar 2 (detektor: {st.session_state.selected_detector_backend})..."):
+                        st.session_state.image2_analysis = analyze_face_attributes_func(st.session_state.image2_original, st.session_state.selected_detector_backend)
+                else: st.warning("Harap unggah Gambar 2 untuk menganalisis atribut.")
+    if st.session_state.image2_analysis:
+        with st.container(border=True):
+            if "error" in st.session_state.image2_analysis: st.error(f"Error Analisis Gbr 2: {st.session_state.image2_analysis['error']}")
+            else:
+                st.markdown("**Atribut Gambar 2:**"); res = st.session_state.image2_analysis
+                attr_colA, attr_colB = st.columns(2)
+                with attr_colA:
+                    st.metric("Perk. Usia", f"{res.get('age', 'N/A')}")
+                    dom_gender = max(res.get('gender', {}), key=res.get('gender', {}).get, default='N/A')
+                    st.metric("Gender", dom_gender)
+                with attr_colB:
+                    st.metric("Emosi", f"{res.get('dominant_emotion', 'N/A').capitalize()}")
+                    st.metric("Ras", f"{res.get('dominant_race', 'N/A').capitalize()}")
+st.markdown("---")
 
-st.markdown("---") # Separator
-
-# Model Selection
-st.subheader("⚙️ Model Selection")
-selected_model_names = st.multiselect(
-    "Select models to use for comparison (at least one):",
+# --- UI untuk Pemilihan SATU Model dan Penyesuaian Threshold ---
+st.subheader("⚙️ Konfigurasi Model Perbandingan")
+selected_model_name = st.selectbox(
+    "Pilih model untuk perbandingan:",
     options=list(MODELS.keys()),
-    default=list(MODELS.keys()) # Select all by default
+    index=0,
+    key="model_selector"
 )
 
-st.markdown("---") # Separator
-
-def compare_faces_multimodel(img1_path, img2_path, chosen_models):
-    results_summary = [] # To store individual model results for detailed view later if needed
-    aggregated_metrics = {'similarity': [], 'distance': [], 'verified_count': 0}
-
-    if not chosen_models:
-        st.error("No models selected for comparison.")
-        return None
-
-    progress_bar_st = st.progress(0)
-    status_text_st = st.empty()
-    num_chosen_models = len(chosen_models)
-
-    for i, model_name in enumerate(chosen_models):
-        status_text_st.text(f"Processing with {model_name} ({i+1}/{num_chosen_models})...")
-        config = MODELS[model_name]
-        try:
-            result = DeepFace.verify(
-                img1_path=img1_path,
-                img2_path=img2_path,
-                model_name=model_name,
-                distance_metric=config["distance_metric"],
-                enforce_detection=True, # Keep True for robustness
-                detector_backend="opencv" # You can change this or make it configurable
-            )
-
-            distance = float(result['distance'])
-            verified = distance < config["threshold"] # DeepFace 'verified' key is already boolean
-
-            # Calculate similarity. This can be tricky as different metrics have different ranges.
-            # For cosine: similarity = (1 - distance) * 100
-            # For euclidean/euclidean_l2: harder to map directly to 0-100% similarity.
-            # A common approach is 100 / (1 + distance), or based on max expected distance.
-            # For simplicity, let's use DeepFace's direct "verified" and the distance itself.
-            # We can derive a generic similarity score for visualization if needed.
-            # Here, a simple inverse relation to distance might be:
-            # similarity_score = max(0, 100 - (distance * X)) where X depends on typical distance range.
-            # For consistency with your previous code:
-            if config["distance_metric"] == "cosine":
-                similarity_score = max(0, (1 - distance) * 100)
-            else: # euclidean, euclidean_l2
-                # This heuristic might need adjustment based on typical euclidean distance ranges for each model
-                # A smaller distance means more similar. A distance of 0 is 100% similar.
-                # If typical max distance where faces are still somewhat similar is ~1.0 for Facenet,
-                # then similarity = max(0, 100 - distance * 100).
-                # If typical max distance for Dlib is ~0.6 for "same", then for Dlib, distance * (100/0.6)
-                similarity_score = max(0, 100 - (distance * (100 / (config["threshold"]*2 if config["threshold"] > 0 else 1) ) ) ) # Very rough heuristic
-                # Let's stick to the simpler one you had, and average that.
-                # similarity_score = max(0, 100 - (distance * 100)) # This makes less sense for euclidean distances > 1
-
-            # Using DeepFace 'verified' directly is more reliable for "same/not same"
-            # For overall similarity percentage, we average the distances and try to convert
-            # Or better, focus on "verified" consensus and average distance.
-
-            aggregated_metrics['distance'].append(distance)
-            if result.get('verified', False): # Use .get for safety
-                 aggregated_metrics['verified_count'] += 1
-
-            results_summary.append({
-                'model': model_name,
-                'verified': result.get('verified', False),
-                'distance': distance,
-                'threshold': config["threshold"]
-                # 'similarity_score': similarity_score # If you want to calculate and show individual model similarity
-            })
-
-        except Exception as e:
-            st.warning(f"Could not process with model {model_name}: {str(e)}")
-            results_summary.append({
-                'model': model_name,
-                'verified': 'Error',
-                'distance': 'N/A',
-                'threshold': config["threshold"]
-            })
-        progress_bar_st.progress((i + 1) / num_chosen_models)
+if selected_model_name:
+    if selected_model_name not in st.session_state.custom_thresholds:
+        st.session_state.custom_thresholds[selected_model_name] = MODELS[selected_model_name]["threshold"]
     
-    status_text_st.text("Analysis complete!")
+    with st.expander(f"Sesuaikan Threshold untuk {selected_model_name} (Opsional)", expanded=True):
+        default_model_threshold = MODELS[selected_model_name]["threshold"]
+        current_user_threshold = st.session_state.custom_thresholds.get(selected_model_name, default_model_threshold)
+        step_val, min_val = 0.01, 0.0
+        if MODELS[selected_model_name]["distance_metric"] == "cosine": max_val = 1.0
+        elif MODELS[selected_model_name]["distance_metric"] == "euclidean": max_val = 50.0 # Contoh rentang
+        elif MODELS[selected_model_name]["distance_metric"] == "euclidean_l2": max_val = 2.0 # Contoh rentang
+        else: max_val = default_model_threshold * 3 if default_model_threshold > 0.1 else 1.0
+        safe_slider_value = max(min_val, min(current_user_threshold, max_val))
+        new_threshold = st.slider(
+            f"Threshold untuk {selected_model_name} (Metrik: {MODELS[selected_model_name]['distance_metric']})",
+            min_value=min_val, max_value=max_val, value=safe_slider_value, step=step_val,
+            key=f"thresh_single_{selected_model_name}", # Kunci unik
+            help=f"Lebih rendah berarti lebih ketat. Default: {default_model_threshold:.3f}. Jika jarak < threshold, maka cocok."
+        )
+        st.session_state.custom_thresholds[selected_model_name] = new_threshold
+st.markdown("---")
 
-    if not aggregated_metrics['distance']: # No models ran successfully
-        st.error("None of the selected models could produce a result.")
-        return None
+# --- Logika Perbandingan (HANYA SATU MODEL) dan Tampilan Hasil ---
+def compare_face_single_model(img1_path, img2_path, model_name_to_use, config_for_model, detector_backend):
+    """Membandingkan dua wajah menggunakan SATU model dengan konfigurasi threshold yang diberikan."""
+    try:
+        result = DeepFace.verify(
+            img1_path=img1_path, img2_path=img2_path, model_name=model_name_to_use,
+            distance_metric=config_for_model["distance_metric"],
+            enforce_detection=True, detector_backend=detector_backend, silent=True
+        )
+        distance = float(result['distance'])
+        verified = distance < config_for_model["threshold"]
+        return {'model': model_name_to_use, 'verified': verified, 'distance': distance,
+                'threshold': config_for_model["threshold"], 'error': None}
+    except Exception as e:
+        st.warning(f"Tidak dapat memproses dengan model {model_name_to_use} (detektor: {detector_backend}): {str(e)}")
+        print(f"--- ERROR TRACEBACK: {model_name_to_use}, {detector_backend} ---")
+        import traceback; traceback.print_exc(); print(f"--- AKHIR TRACEBACK ---")
+        return {'model': model_name_to_use, 'verified': 'Error', 'distance': 'N/A',
+                'threshold': config_for_model["threshold"], 'error': str(e)}
 
-    # Calculate average results from successful runs
-    successful_runs = len(aggregated_metrics['distance'])
-    avg_distance = sum(aggregated_metrics['distance']) / successful_runs
-    
-    # For overall similarity, it's better to use consensus or an average of normalized distances.
-    # Let's use consensus for "verified" and report average distance.
-    # The "similarity" from your original code was `max(0, 100 - (distance * 100))`.
-    # We can average this if desired, but it's a bit arbitrary for non-cosine distances.
-    # Let's calculate an average similarity based on a normalized scale.
-    # A simple way: average the 'verified' status (as 0 or 1) and scale to 100.
-    # Or, if we want a "similarity score" similar to your original:
-    avg_similarity_score = 0
-    temp_similarities = []
-    for r_sum in results_summary:
-        if isinstance(r_sum['distance'], float):
-            # This is a heuristic and might not be perfectly comparable across distance metrics
-            # For cosine distance (0 to 2, 0 is identical): (1 - dist)
-            # For Euclidean L2 (0 to large, 0 is identical): 1 / (1 + dist) or similar
-            # Sticking to the provided formula for simplicity in aggregation:
-            # Let's re-evaluate this. If a model says "verified", it's "similar".
-            # The overall "similarity" could be the % of models that verified, or an average of individual similarities.
-
-            # Let's try to derive a similarity from distance for each model, then average THAT.
-            # For cosine: sim = 1 - dist.
-            # For Euclidean: More complex. Let's use the consensus for a "similarity score".
-            pass # We will use consensus for main similarity indicator
-
-    consensus = aggregated_metrics['verified_count'] / successful_runs if successful_runs > 0 else 0
-    
-    # Overall "similarity percentage" can be the consensus percentage itself.
-    overall_similarity_percent = consensus * 100
-
-
-    return {
-        'overall_similarity_percent': overall_similarity_percent, # Based on consensus
-        'avg_distance': avg_distance,
-        'consensus_ratio': consensus,
-        'verified_count': aggregated_metrics['verified_count'],
-        'models_attempted': num_chosen_models,
-        'models_succeeded': successful_runs,
-        'individual_results': results_summary # For detailed display
-    }
-
-
-if st.button("Compare Faces", type="primary", use_container_width=True):
-    if not selected_model_names:
-        st.warning("⚠️ Please select at least one model for comparison.")
-    elif st.session_state.image1 and st.session_state.image2:
-        with st.spinner("Preparing images and analyzing faces... This may take a moment."):
-            # Create temporary files for DeepFace
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp1, \
-                 tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp2:
-
-                # Ensure images are in RGB format
-                img1_processed = st.session_state.image1
-                if img1_processed.mode == 'RGBA':
-                    img1_processed = img1_processed.convert('RGB')
-                img1_processed.save(tmp1.name, format='JPEG')
-                img1_path = tmp1.name
-
-                img2_processed = st.session_state.image2
-                if img2_processed.mode == 'RGBA':
-                    img2_processed = img2_processed.convert('RGB')
-                img2_processed.save(tmp2.name, format='JPEG')
-                img2_path = tmp2.name
-
+if st.button("Bandingkan Wajah dengan Model Terpilih", type="primary", use_container_width=True, key="compare_single_btn"):
+    if not selected_model_name: st.warning("⚠️ Harap pilih model untuk perbandingan.")
+    elif st.session_state.image1_original and st.session_state.image2_original:
+        active_model_config = {
+            "threshold": st.session_state.custom_thresholds.get(selected_model_name, MODELS[selected_model_name]["threshold"]),
+            "distance_metric": MODELS[selected_model_name]["distance_metric"]
+        }
+        current_detector_for_comparison = st.session_state.selected_detector_backend
+        with st.spinner(f"Menyiapkan gambar dan menganalisis dengan {selected_model_name} (detektor: {current_detector_for_comparison})..."):
+            img1_path, img2_path = "", ""
             try:
-                comparison_result = compare_faces_multimodel(img1_path, img2_path, selected_model_names)
-
-                if comparison_result:
-                    st.subheader("📊 Overall Comparison Result")
-
-                    # Visual progress bar for overall similarity (consensus-based)
-                    st.markdown(f"""
-                    <div class="progress-container">
-                        <div class="progress-bar" style="width: {comparison_result['overall_similarity_percent']}%"></div>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-                    res_col1, res_col2 = st.columns(2)
-                    with res_col1:
-                        st.metric("Overall Similarity (Consensus)",
-                                  f"{comparison_result['overall_similarity_percent']:.1f}%")
-                        st.metric("Average Distance (successful models)",
-                                  f"{comparison_result['avg_distance']:.4f}")
-
-                    with res_col2:
-                        st.metric("Model Consensus",
-                                  f"{comparison_result['consensus_ratio']*100:.0f}% ({comparison_result['verified_count']}/{comparison_result['models_succeeded']} models agree)")
-                        
-                        st.caption(f"Based on {comparison_result['models_succeeded']} out of {comparison_result['models_attempted']} selected models successfully processed.")
-
-                        if comparison_result['models_succeeded'] == 0:
-                             st.error("❌ No models could successfully compare the images.")
-                        elif comparison_result['consensus_ratio'] >= 0.75: # e.g., 3 out of 4, or all if < 4
-                            st.success("✅ Strong match consensus")
-                        elif comparison_result['consensus_ratio'] >= 0.5:
-                            st.warning("⚠️ Partial match consensus")
-                        else:
-                            st.error("❌ No match consensus")
-                    
-                    st.markdown("---")
-                    st.subheader("🔬 Detailed Model Results")
-                    
-                    # Display individual model results in a more structured way
-                    for res in comparison_result['individual_results']:
-                        model_name = res['model']
-                        status = "✅ Verified" if res['verified'] is True else ("❌ Not Verified" if res['verified'] is False else "⚠️ Error")
-                        distance = f"{res['distance']:.4f}" if isinstance(res['distance'], float) else res['distance']
-                        threshold = f"{res['threshold']:.2f}"
-
-                        col_m, col_s, col_d, col_t = st.columns([2,2,1,1])
-                        with col_m:
-                            st.markdown(f"**{model_name}**")
-                        with col_s:
-                            if res['verified'] is True:
-                                st.markdown(f"<span style='color:green'>{status}</span>", unsafe_allow_html=True)
-                            elif res['verified'] is False:
-                                st.markdown(f"<span style='color:red'>{status}</span>", unsafe_allow_html=True)
-                            else:
-                                st.markdown(f"<span style='color:orange'>{status}</span>", unsafe_allow_html=True)
-                        with col_d:
-                            st.markdown(f"Dist: {distance}")
-                        with col_t:
-                            st.markdown(f"Thresh: {threshold}")
-                        st.divider()
-
-
-                    with st.expander("How to interpret these results"):
-                        st.markdown("""
-                        - **Overall Similarity (Consensus)**: Percentage of selected models that agree the faces are the same.
-                        - **Average Distance**: The average distance score from models that ran successfully (lower is generally better).
-                        - **Model Consensus**: Ratio and count of models that verified the faces as a match.
-                        - **Detailed Model Results**:
-                            - **Status**: Whether each model verified the faces as a match (✅), not a match (❌), or encountered an error (⚠️).
-                            - **Dist**: The distance calculated by the model. Lower means more similar.
-                            - **Thresh**: The threshold used by that model. If Distance < Threshold, it's a match.
-                        - **Confidence Levels (based on Consensus)**:
-                            - Strong Match: >= 75% of successful models agree.
-                            - Partial Match: >= 50% and < 75% of successful models agree.
-                            - No Match: < 50% of successful models agree.
-                        """)
-
-                else:
-                    # Error messages are now handled within compare_faces_multimodel or if no models selected
-                    if selected_model_names: # if models were selected but function returned None
-                        st.error("Comparison could not be completed. Ensure faces are detectable in both images.")
-
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp1, \
+                     tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp2:
+                    st.session_state.image1_original.convert('RGB').save(tmp1.name, format='JPEG'); img1_path = tmp1.name
+                    st.session_state.image2_original.convert('RGB').save(tmp2.name, format='JPEG'); img2_path = tmp2.name
+                
+                comparison_result_single = compare_face_single_model(
+                    img1_path, img2_path, selected_model_name, active_model_config, current_detector_for_comparison
+                )
+                if comparison_result_single:
+                    st.subheader(f"📊 Hasil Perbandingan dengan Model: {selected_model_name}")
+                    res = comparison_result_single
+                    if res['error']: st.error(f"Gagal memproses: {res['error']}")
+                    else:
+                        similarity_percent_visual = 0
+                        if MODELS[selected_model_name]["distance_metric"] == "cosine" and isinstance(res['distance'], float):
+                            similarity_percent_visual = max(0, (1 - res['distance']) * 100)
+                        elif isinstance(res['distance'], float) and res['threshold'] > 0:
+                            scale_factor = res['threshold'] * 1.5 
+                            similarity_percent_visual = max(0, 100 * (1 - (min(res['distance'], scale_factor) / scale_factor)))
+                        else: similarity_percent_visual = 100 if res['verified'] else 0
+                        st.markdown(f"""<div class="progress-container"><div class="progress-bar" style="width: {similarity_percent_visual:.0f}%"></div></div>""", unsafe_allow_html=True)
+                        status_emoji = "✅" if res['verified'] else "❌"
+                        status_text = "Terverifikasi (Wajah Sama)" if res['verified'] else "Tidak Terverifikasi (Wajah Berbeda)"
+                        col_res1, col_res2, col_res3 = st.columns(3)
+                        with col_res1: st.metric("Status", f"{status_emoji} {status_text}")
+                        with col_res2: st.metric("Jarak", f"{res['distance']:.4f}" if isinstance(res['distance'], float) else res['distance'])
+                        with col_res3: st.metric("Threshold Digunakan", f"{res['threshold']:.3f}")
+                        if res['verified']: st.success(f"Menurut model {selected_model_name}, kedua wajah **cocok**.")
+                        else: st.error(f"Menurut model {selected_model_name}, kedua wajah **tidak cocok**.")
+                else: st.error("Perbandingan tidak dapat diselesaikan.")
             except Exception as e:
-                st.error(f"An unexpected error occurred during comparison: {str(e)}")
-                import traceback
-                st.error(traceback.format_exc())
-
+                st.error(f"Terjadi kesalahan tak terduga: {str(e)}"); import traceback; st.error(traceback.format_exc())
             finally:
-                # Clean up temporary files
-                try:
-                    os.unlink(img1_path)
-                    os.unlink(img2_path)
-                except Exception as e:
-                    st.warning(f"Could not delete temporary files: {e}") # Non-critical
+                if img1_path and os.path.exists(img1_path): os.unlink(img1_path)
+                if img2_path and os.path.exists(img2_path): os.unlink(img2_path)
     else:
-        st.warning("⚠️ Please upload both images first.")
+        st.warning("⚠️ Harap unggah kedua gambar terlebih dahulu.")
 
-# Information sections
-with st.expander("About this app"):
-    st.markdown(f"""
-    **Multi-Model Face Similarity Comparison Tool**
-    
-    This application uses multiple deep learning models to compare two face images and determine their similarity. 
-    You can select which models to use for the comparison.
-    
-    **Features:**
-    - User-selectable face recognition models
-    - Each model with pre-set thresholds (may require tuning for optimal performance)
-    - Consensus-based verification system
-    - Detailed per-model and overall results
-    
-    **Models Available:**
-    { "".join([f"- {model_name}<br>" for model_name in MODELS.keys()]) }
-    """, unsafe_allow_html=True)
+# --- Footer dan Informasi Tambahan ---
+st.markdown("---")
+with st.expander("Tentang Aplikasi Ini & Model yang Digunakan", expanded=False):
+    st.markdown("#### Analisis & Perbandingan Wajah Tingkat Lanjut")
+    st.markdown("Aplikasi ini memungkinkan Anda membandingkan dua wajah menggunakan model AI terpilih, menganalisis atribut wajah, dan menyesuaikan parameter.")
+    st.markdown("**Model yang Tersedia untuk Perbandingan:**")
+    for model_name_loop, config_loop in MODELS.items():
+        st.markdown(f"- **{model_name_loop}**: Metrik: `{config_loop['distance_metric']}`, Default Threshold: `{config_loop['threshold']:.3f}`")
+    st.markdown(f"\n**Backend Detektor Wajah yang Digunakan:** `{st.session_state.selected_detector_backend}`")
 
 with st.sidebar:
-    st.markdown("""
-    ### Instructions
-    1. Upload two face images.
-    2. Select the face recognition models you want to use.
-    3. Click "Compare Faces".
-    4. View detailed similarity results.
-    
-    **Tips for best results:**
-    - Use clear frontal face images.
-    - Ensure good lighting conditions.
-    - Avoid obstructions (e.g., sunglasses, heavy makeup if possible).
-    - Maintain relatively neutral facial expressions.
-    - Use reasonably high-resolution images.
-    """)
+    # st.image("URL_IKON_ANDA_DISINI", width=80) # Ganti dengan URL ikon yang sesuai jika ada
+    st.markdown("### Instruksi Penggunaan"); st.markdown("""1. **Pilih Detektor Wajah** (di sidebar kiri).\n2. **Unggah Gambar** 1 & 2.\n3. **(Opsional) Analisis Atribut**.\n4. **Pilih Model Perbandingan**.\n5. **(Opsional) Sesuaikan Threshold**.\n6. **Bandingkan Wajah**.\n7. **Lihat Hasil**.""")
+    st.markdown("### Tips"); st.markdown("- Gunakan gambar wajah jelas & frontal.\n- Pencahayaan baik membantu.\n- Resolusi lebih tinggi lebih baik.")

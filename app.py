@@ -6,14 +6,13 @@ import numpy as np
 from PIL import Image
 import tempfile
 
-# Konfigurasi halaman aplikasi Streamlit
 st.set_page_config(
-    page_title="Analisis & Perbandingan Wajah Tingkat Lanjut",
+    page_title="Analisis & Perbandingan Wajah",
     page_icon="🔬",
     layout="wide"
 )
 
-# Daftar MODEL yang akan digunakan beserta konfigurasi threshold dan metrik jaraknya
+# Daftar MODEL
 MODELS = {
     "VGG-Face": {"threshold": 0.68, "distance_metric": "cosine"},
     "Facenet": {"threshold": 0.40, "distance_metric": "euclidean"},
@@ -24,7 +23,6 @@ MODELS = {
     "OpenFace": {"threshold": 0.80, "distance_metric": "euclidean_l2"},
 }
 
-# Daftar DETECTOR_BACKEND yang bisa dipilih pengguna (Dibatasi)
 SUPPORTED_DETECTORS = ["opencv", "dlib", "mediapipe"]
 
 # CSS Kustom
@@ -37,7 +35,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Judul utama aplikasi
-st.title("🔬 Analisis & Perbandingan Wajah Tingkat Lanjut")
+st.title("🔬 Analisis & Perbandingan Wajah")
 st.markdown("""
 Unggah dua gambar wajah untuk membandingkan kemiripannya menggunakan model dan detektor wajah pilihan.
 Anda juga dapat menganalisis atribut wajah individual dan menyesuaikan ambang batas (threshold) model.
@@ -329,7 +327,7 @@ if st.button("Bandingkan Wajah dengan Model Terpilih", type="primary", use_conta
 # --- Footer dan Informasi Tambahan ---
 st.markdown("---")
 with st.expander("Tentang Aplikasi Ini & Model yang Digunakan", expanded=False):
-    st.markdown("#### Analisis & Perbandingan Wajah Tingkat Lanjut")
+    st.markdown("#### Analisis & Perbandingan Wajah")
     st.markdown("Aplikasi ini memungkinkan Anda membandingkan dua wajah menggunakan model AI terpilih, menganalisis atribut wajah, dan menyesuaikan parameter.")
     st.markdown("**Model yang Tersedia untuk Perbandingan:**")
     for model_name_loop, config_loop in MODELS.items():
